@@ -2,6 +2,7 @@
 #include <vector>
 #include <random>
 #include <math.h>
+#include <limits>
 
 typedef std::vector<double> instance_type;
 typedef std::vector<instance_type> list_type;
@@ -26,7 +27,7 @@ class DifferentialEvolution {
 protected:
     size_t mIterations, mPopulationSize;
     bool mOptimized;
-    list_type mInstances;
+    list_type mInstances, mMutations;
     size_t mBestIndex;
     double mMutationParam, mCrossoverParam;
 
@@ -35,10 +36,11 @@ protected:
     void performIteration(const Rastrigin& function);
     void determineBest(const Rastrigin& function);
     size_t getRandomIndex() const;
+    bool shouldMutate() const;
 public:
     DifferentialEvolution(size_t iterations, size_t populationSize, double mutationParam, double crossoverParam)
-    : mIterations(iterations), mOptimized(false), mInstances(list_type()), mBestIndex(0),
-      mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
+    : mIterations(iterations), mOptimized(false), mInstances(list_type(populationSize)), mMutations(list_type(populationSize)),
+      mBestIndex(0), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
 
     void optimize(Rastrigin function);
     instance_type getBest() const;
@@ -52,17 +54,15 @@ void display(const instance_type& params) {
 
 int main() {
   Rastrigin func(3, -5.12, 5.12, 10);
-//  DifferentialEvolution optimizer(20, 200, 0.5, 0.5);
+  DifferentialEvolution optimizer(100, 2000, 0.25, 0.75);
 
-//  optimizer.optimize(func);
+  optimizer.optimize(func);
 
-  instance_type params = func.generateRandomParam();
-  std::cout << "Randomly generated params:" << std::endl;
-  display(params);
+  instance_type bestSolution = optimizer.getBest();
 
-  std::cout << "The value: " << func.evaluate(params) << std::endl;
+  std::cout << "The best solution: " << func.evaluate(bestSolution) << std::endl;
+  display(bestSolution);
 
-  std::cout << "Hello, World!" << std::endl;
   return 0;
 }
 
@@ -70,14 +70,19 @@ int main() {
  * Implementation of Rastrigin function
  * */
 bool Rastrigin::isWithinConstraint(const instance_type& params) const {
+  // Check whether every parameter is within the bounds
   for(double param : params)
-    if (mLowerLimit <= param && param <= mUpperLimit)
+    if (param < mLowerLimit || mUpperLimit < param)
       return false;
 
   return true;
 }
 
 double Rastrigin::evaluate(const instance_type& params) const {
+  // If the number is out of bounds, return max number (because it's minimization function
+  if (!isWithinConstraint(params))
+    return std::numeric_limits<double>::max();
+
   double res = mA * ((double)mDimensions);
 
   for (int i = 0; i < mDimensions; i++) {
@@ -101,29 +106,64 @@ instance_type Rastrigin::generateRandomParam() const {
  * Implementation of Differential Evolution
  * */
 void DifferentialEvolution::initialize(const Rastrigin& function) {
-  mInstances = list_type(mPopulationSize);
-
   for(int i = 0; i < mPopulationSize; i++) {
     mInstances[i] = function.generateRandomParam();
   }
 }
 
 instance_type DifferentialEvolution::getMutation() const {
-  /* TODO: Implement the method */
+  /* Generate three distinct indices */
+  size_t i1, i2, i3;
+
+  i1 = getRandomIndex();
+
+  do {
+    i2 = getRandomIndex();
+  } while(i1 == i2);
+
+  do {
+    i3 = getRandomIndex();
+  } while(i1 == i3 || i2 == i3);
+
+  // Copy the vector in i1
+  instance_type temp = mInstances[i1];
+
+  auto it1 = mInstances[i2].cbegin(),
+    it2 = mInstances[i3].cbegin();
+  // Perform v1 + F * (v2 - v3)
+  for(int i = 0; i < temp.size(); i++) {
+    temp[i] += mMutationParam * (*(it1 + i) - *(it2 + i));
+  }
+
+  return temp;
 }
 
 size_t DifferentialEvolution::getRandomIndex() const {
-  /* TODO: Implement the method */
+  return rand() % mPopulationSize;
+}
+
+bool DifferentialEvolution::shouldMutate() const {
+  return (rand() / (double)RAND_MAX) < mCrossoverParam;
 }
 
 void DifferentialEvolution::performIteration(const Rastrigin& function) {
-  /* TODO: Implement the method */
   // Prepare the set of mutated instances
+  for (int i = 0; i < mPopulationSize; i++)
+    mMutations[i] = getMutation();
 
   // Generate the index of random mutation
+  size_t certainMutationIndex = getRandomIndex();
 
   // For each element: if index equals to the one above or random number is below crossoverParam
   // Try replacing it by new entry
+  for (int i = 0; i < mPopulationSize; i++) {
+    if (i == certainMutationIndex || shouldMutate()) {
+      // If the mutated one shows better results, then replace
+      if (function.evaluate(mInstances[i]) > function.evaluate(mMutations[i])) {
+        mInstances[i] = mMutations[i];
+      }
+    }
+  }
 }
 
 void DifferentialEvolution::determineBest(const Rastrigin& function) {
@@ -148,11 +188,11 @@ void DifferentialEvolution::optimize(Rastrigin function) {
 
   // Before hit the maximum iterations count
   // Optimize the function evaluation
-  /* TODO: Remove i < 1 */
-  for(int i = 0; i < mIterations && i < 1; i++) {
+  for(int i = 0; i < mIterations; i++) {
     performIteration(function);
   }
 
+  mOptimized = true;
   // Get the best param in the set
   determineBest(function);
 }
