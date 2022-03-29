@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
-#include<random>
+#include <random>
+#include <math.h>
 
 typedef std::vector<double> instance_type;
 typedef std::vector<instance_type> list_type;
@@ -16,7 +17,7 @@ public:
     Rastrigin(size_t dimensions, double lowerLimit, double upperLimit, double A)
         : mDimensions(dimensions), mLowerLimit(lowerLimit), mUpperLimit(upperLimit), mA(A) {}
 
-    bool isWithinConstraint(double value) const;
+    bool isWithinConstraint(const instance_type& params) const;
     double evaluate(const instance_type& params) const;
     instance_type generateRandomParam() const;
 };
@@ -43,11 +44,23 @@ public:
     instance_type getBest() const;
 };
 
+void display(const instance_type& params) {
+  for (auto it = params.cbegin(); it != params.cend(); it++)
+    std::cout << *it << " ";
+  std::cout << std::endl;
+}
+
 int main() {
   Rastrigin func(3, -5.12, 5.12, 10);
-  DifferentialEvolution optimizer(20, 200, 0.5, 0.5);
+//  DifferentialEvolution optimizer(20, 200, 0.5, 0.5);
 
-  optimizer.optimize(func);
+//  optimizer.optimize(func);
+
+  instance_type params = func.generateRandomParam();
+  std::cout << "Randomly generated params:" << std::endl;
+  display(params);
+
+  std::cout << "The value: " << func.evaluate(params) << std::endl;
 
   std::cout << "Hello, World!" << std::endl;
   return 0;
@@ -56,9 +69,33 @@ int main() {
 /**
  * Implementation of Rastrigin function
  * */
-bool Rastrigin::isWithinConstraint(double value) const {}
-double Rastrigin::evaluate(const instance_type& params) const {}
-instance_type Rastrigin::generateRandomParam() const {}
+bool Rastrigin::isWithinConstraint(const instance_type& params) const {
+  for(double param : params)
+    if (mLowerLimit <= param && param <= mUpperLimit)
+      return false;
+
+  return true;
+}
+
+double Rastrigin::evaluate(const instance_type& params) const {
+  double res = mA * ((double)mDimensions);
+
+  for (int i = 0; i < mDimensions; i++) {
+    res += pow(params[i], 2) - mA * cos(2 * M_PI * params[i]);
+  }
+
+  return res;
+}
+
+instance_type Rastrigin::generateRandomParam() const {
+  instance_type result(mDimensions);
+
+  for(int i = 0; i < mDimensions; i++) {
+    result[i] = mLowerLimit + ((double)rand()) / RAND_MAX * (mUpperLimit - mLowerLimit);
+  }
+
+  return result;
+}
 
 /**
  * Implementation of Differential Evolution
