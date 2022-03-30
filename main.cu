@@ -1,15 +1,53 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <math.h>
+#include <cmath>
 #include <limits>
+#include <cuda.h>
+#include <curand.h>
 
+#define BLOCK_SIZE 128
+#define BLOCKS_COUNT(n) ((size_t)ceil(((float)n)/(float)BLOCK_SIZE))
+
+/**
+ * Class declarations
+ * */
 class Rastrigin;
 class DEInstance;
+class DifferentialEvolution;
 
+/**
+ * Type declarations
+ * */
 typedef std::vector<double> params_type;
 typedef DEInstance instance_type;
 typedef std::vector<instance_type> list_type;
+
+/**
+ * Kernels
+ * */
+
+__global__ void transformNumber(double* src, int size, double lower, double upper) {
+  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    src[idx] = src[idx] * (upper - lower) + lower;
+  }
+}
+
+class RandomNumberGenerator {
+protected:
+    curandGenerator_t generator;
+
+    double* _generateNumbers(size_t n);
+public:
+    RandomNumberGenerator() {
+      curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_MT19937);
+      curandSetPseudoRandomGeneratorSeed(generator, time(nullptr));
+    }
+
+    params_type generate(size_t n, double lowerBound, double upperBound);
+};
+
 
 class Rastrigin {
 protected:
@@ -24,7 +62,7 @@ public:
 
     bool isWithinConstraint(const params_type& params) const;
     double evaluate(const params_type& params) const;
-    instance_type generateRandomParam() const;
+    list_type generateParamSet(size_t n) const;
 };
 
 
@@ -97,6 +135,43 @@ int main() {
 }
 
 /**
+ * Implementation of random generator
+ * */
+params_type RandomNumberGenerator::generate(size_t n, double lowerBound, double upperBound) {
+  // Generate the numbers in uniform format
+  // Numbers will be on the device
+  double* numbersDev = _generateNumbers(n);
+
+  // Transform numbers from [0:1] to [lowerBound:upperBound]
+  transformNumber<<<BLOCKS_COUNT(n), BLOCK_SIZE>>>(numbersDev, n, lowerBound, upperBound);
+
+  // Copy from device to host and turn into more comfortable format
+  auto* numbersHost = new double[n];
+  cudaMemcpy(numbersHost, numbersDev, sizeof(double) * n, cudaMemcpyDeviceToHost);
+
+  params_type result(numbersHost, numbersHost + n);
+
+  // Free data and return vector
+  cudaFree(numbersDev);
+  free(numbersHost);
+  return result;
+}
+
+double *RandomNumberGenerator::_generateNumbers(size_t n) {
+  size_t bytesCount = n * sizeof(double);
+  double *hostData, *devData;
+  hostData = new double[n];
+
+  cudaMalloc((void**)&devData, bytesCount);
+
+  curandGenerateUniformDouble(generator, devData, n);
+
+  cudaMemcpy(hostData, devData, bytesCount, cudaMemcpyDeviceToHost);
+
+  return devData;
+}
+
+/**
  * Implementation of Rastrigin function
  * */
 bool Rastrigin::isWithinConstraint(const params_type& params) const {
@@ -122,14 +197,20 @@ double Rastrigin::evaluate(const params_type& params) const {
   return res;
 }
 
-instance_type Rastrigin::generateRandomParam() const {
-  params_type params(mDimensions);
+list_type Rastrigin::generateParamSet(size_t n) const {
+  // Generate numbers in flat format
+  RandomNumberGenerator generator;
+  params_type paramsFlat = generator.generate(n * mDimensions, mLowerLimit, mUpperLimit);
 
-  for(int i = 0; i < mDimensions; i++) {
-    params[i] = mLowerLimit + ((double)rand()) / RAND_MAX * (mUpperLimit - mLowerLimit);
+  // Distribute the numbers in 2D vectors
+  list_type result(n);
+
+  params_type params;
+  for(unsigned long i = 0; i < n; i++) {
+    params = params_type(paramsFlat.cbegin() + i * mDimensions, paramsFlat.cbegin() + (i + 1) * mDimensions);
+    result[i] = instance_type(params, *this);
   }
 
-  instance_type result(params, *this);
   return result;
 }
 
@@ -137,9 +218,7 @@ instance_type Rastrigin::generateRandomParam() const {
  * Implementation of Differential Evolution
  * */
 void DifferentialEvolution::initialize(const Rastrigin& function) {
-  for(int i = 0; i < mPopulationSize; i++) {
-    mInstances[i] = function.generateRandomParam();
-  }
+  mInstances = function.generateParamSet(mInstances.size());
 }
 
 instance_type DifferentialEvolution::getMutation(const Rastrigin& function) const {
