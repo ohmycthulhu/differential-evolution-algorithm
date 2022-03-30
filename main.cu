@@ -4,7 +4,11 @@
 #include <math.h>
 #include <limits>
 
-typedef std::vector<double> instance_type;
+class Rastrigin;
+class DEInstance;
+
+typedef std::vector<double> params_type;
+typedef DEInstance instance_type;
 typedef std::vector<instance_type> list_type;
 
 class Rastrigin {
@@ -18,9 +22,35 @@ public:
     Rastrigin(size_t dimensions, double lowerLimit, double upperLimit, double A)
         : mDimensions(dimensions), mLowerLimit(lowerLimit), mUpperLimit(upperLimit), mA(A) {}
 
-    bool isWithinConstraint(const instance_type& params) const;
-    double evaluate(const instance_type& params) const;
+    bool isWithinConstraint(const params_type& params) const;
+    double evaluate(const params_type& params) const;
     instance_type generateRandomParam() const;
+};
+
+
+class DEInstance {
+protected:
+    params_type mParams;
+    double mValue;
+public:
+    DEInstance() : mParams(), mValue() {}
+    DEInstance(const params_type& params, const Rastrigin& func) : mParams(params), mValue(func.evaluate(params)) {}
+    DEInstance(const DEInstance& other) : mValue(other.mValue) {
+      mParams = other.mParams;
+    }
+
+    const params_type* getParams() const{
+      return &mParams;
+    }
+
+    double getValue() const {
+      return mValue;
+    }
+
+    bool operator>(const DEInstance& other) const { return mValue > other.mValue; }
+    bool operator>=(const DEInstance& other) const { return mValue >= other.mValue; }
+    bool operator<(const DEInstance& other) const { return mValue < other.mValue; }
+    bool operator<=(const DEInstance& other) const { return mValue <= other.mValue; }
 };
 
 class DifferentialEvolution {
@@ -32,7 +62,7 @@ protected:
     double mMutationParam, mCrossoverParam;
 
     void initialize(const Rastrigin& function);
-    instance_type getMutation() const;
+    instance_type getMutation(const Rastrigin& function) const;
     void performIteration(const Rastrigin& function);
     void determineBest(const Rastrigin& function);
     size_t getRandomIndex() const;
@@ -46,7 +76,7 @@ public:
     instance_type getBest() const;
 };
 
-void display(const instance_type& params) {
+void display(const params_type& params) {
   for (auto it = params.cbegin(); it != params.cend(); it++)
     std::cout << *it << " ";
   std::cout << std::endl;
@@ -60,8 +90,8 @@ int main() {
 
   instance_type bestSolution = optimizer.getBest();
 
-  std::cout << "The best solution: " << func.evaluate(bestSolution) << std::endl;
-  display(bestSolution);
+  std::cout << "The best solution: " << bestSolution.getValue() << std::endl;
+  display(*bestSolution.getParams());
 
   return 0;
 }
@@ -69,7 +99,7 @@ int main() {
 /**
  * Implementation of Rastrigin function
  * */
-bool Rastrigin::isWithinConstraint(const instance_type& params) const {
+bool Rastrigin::isWithinConstraint(const params_type& params) const {
   // Check whether every parameter is within the bounds
   for(double param : params)
     if (param < mLowerLimit || mUpperLimit < param)
@@ -78,7 +108,7 @@ bool Rastrigin::isWithinConstraint(const instance_type& params) const {
   return true;
 }
 
-double Rastrigin::evaluate(const instance_type& params) const {
+double Rastrigin::evaluate(const params_type& params) const {
   // If the number is out of bounds, return max number (because it's minimization function
   if (!isWithinConstraint(params))
     return std::numeric_limits<double>::max();
@@ -93,12 +123,13 @@ double Rastrigin::evaluate(const instance_type& params) const {
 }
 
 instance_type Rastrigin::generateRandomParam() const {
-  instance_type result(mDimensions);
+  params_type params(mDimensions);
 
   for(int i = 0; i < mDimensions; i++) {
-    result[i] = mLowerLimit + ((double)rand()) / RAND_MAX * (mUpperLimit - mLowerLimit);
+    params[i] = mLowerLimit + ((double)rand()) / RAND_MAX * (mUpperLimit - mLowerLimit);
   }
 
+  instance_type result(params, *this);
   return result;
 }
 
@@ -111,7 +142,7 @@ void DifferentialEvolution::initialize(const Rastrigin& function) {
   }
 }
 
-instance_type DifferentialEvolution::getMutation() const {
+instance_type DifferentialEvolution::getMutation(const Rastrigin& function) const {
   /* Generate three distinct indices */
   size_t i1, i2, i3;
 
@@ -126,16 +157,17 @@ instance_type DifferentialEvolution::getMutation() const {
   } while(i1 == i3 || i2 == i3);
 
   // Copy the vector in i1
-  instance_type temp = mInstances[i1];
+  params_type params = params_type(*mInstances[i1].getParams());
 
-  auto it1 = mInstances[i2].cbegin(),
-    it2 = mInstances[i3].cbegin();
+  auto it1 = mInstances[i2].getParams()->cbegin(),
+    it2 = mInstances[i3].getParams()->cbegin();
   // Perform v1 + F * (v2 - v3)
-  for(int i = 0; i < temp.size(); i++) {
-    temp[i] += mMutationParam * (*(it1 + i) - *(it2 + i));
+  for(int i = 0; i < params.size(); i++) {
+    params[i] += mMutationParam * (*(it1 + i) - *(it2 + i));
   }
 
-  return temp;
+  instance_type result(params, function);
+  return result;
 }
 
 size_t DifferentialEvolution::getRandomIndex() const {
@@ -149,7 +181,7 @@ bool DifferentialEvolution::shouldMutate() const {
 void DifferentialEvolution::performIteration(const Rastrigin& function) {
   // Prepare the set of mutated instances
   for (int i = 0; i < mPopulationSize; i++)
-    mMutations[i] = getMutation();
+    mMutations[i] = getMutation(function);
 
   // Generate the index of random mutation
   size_t certainMutationIndex = getRandomIndex();
@@ -159,7 +191,7 @@ void DifferentialEvolution::performIteration(const Rastrigin& function) {
   for (int i = 0; i < mPopulationSize; i++) {
     if (i == certainMutationIndex || shouldMutate()) {
       // If the mutated one shows better results, then replace
-      if (function.evaluate(mInstances[i]) > function.evaluate(mMutations[i])) {
+      if (mMutations[i] < mInstances[i]) {
         mInstances[i] = mMutations[i];
       }
     }
@@ -168,13 +200,9 @@ void DifferentialEvolution::performIteration(const Rastrigin& function) {
 
 void DifferentialEvolution::determineBest(const Rastrigin& function) {
   size_t bestIndex = 0;
-  double bestValue = function.evaluate(mInstances[0]);
 
-  double currentValue;
   for(int i = 1; i < mInstances.size(); i++) {
-    currentValue = function.evaluate(mInstances[i]);
-    if (currentValue < bestValue) {
-      bestValue = currentValue;
+    if (mInstances[i] < mInstances[bestIndex]) {
       bestIndex = i;
     }
   }
