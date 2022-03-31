@@ -5,6 +5,8 @@
 #include <limits>
 #include <cuda.h>
 #include <curand.h>
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
 
 #define BLOCK_SIZE 128
 #define BLOCKS_COUNT(n) ((size_t)ceil(((float)n)/(float)BLOCK_SIZE))
@@ -21,7 +23,6 @@ class DifferentialEvolution;
  * */
 typedef std::vector<double> params_type;
 typedef DEInstance instance_type;
-typedef std::vector<instance_type> list_type;
 
 /**
  * Kernels
@@ -62,32 +63,49 @@ public:
 
     bool isWithinConstraint(const params_type& params) const;
     double evaluate(const params_type& params) const;
-    list_type generateParamSet(size_t n) const;
+    thrust::host_vector<instance_type> generateParamSet(size_t n) const;
 };
 
 
 class DEInstance {
 protected:
-    params_type mParams;
+    params_type* mParams;
     double mValue;
+
 public:
-    DEInstance() : mParams(), mValue() {}
-    DEInstance(const params_type& params, const Rastrigin& func) : mParams(params), mValue(func.evaluate(params)) {}
-    DEInstance(const DEInstance& other) : mValue(other.mValue) {
-      mParams = other.mParams;
+    __host__ __device__
+    DEInstance() : mParams(nullptr), mValue(-1) {}
+
+    __host__ __device__
+    DEInstance(params_type* params, const Rastrigin& func) : mParams(params), mValue(func.evaluate(*params)) {}
+
+    __host__ __device__
+    DEInstance(const DEInstance& other) : mParams(other.mParams), mValue(other.mValue) {}
+
+    __host__ __device__
+    bool isEmpty() {
+      return mParams == nullptr;
     }
 
     const params_type* getParams() const{
-      return &mParams;
+      return mParams;
     }
 
+    __host__ __device__
     double getValue() const {
       return mValue;
     }
 
+    __host__ __device__
     bool operator>(const DEInstance& other) const { return mValue > other.mValue; }
+
+    __host__ __device__
     bool operator>=(const DEInstance& other) const { return mValue >= other.mValue; }
+
+    __host__ __device__
     bool operator<(const DEInstance& other) const { return mValue < other.mValue; }
+
+    __host__ __device__
     bool operator<=(const DEInstance& other) const { return mValue <= other.mValue; }
 };
 
@@ -95,7 +113,7 @@ class DifferentialEvolution {
 protected:
     size_t mIterations, mPopulationSize;
     bool mOptimized;
-    list_type mInstances, mMutations;
+    thrust::host_vector<instance_type> mInstances, mMutations;
     size_t mBestIndex;
     double mMutationParam, mCrossoverParam;
 
@@ -107,7 +125,7 @@ protected:
     bool shouldMutate() const;
 public:
     DifferentialEvolution(size_t iterations, size_t populationSize, double mutationParam, double crossoverParam)
-    : mIterations(iterations), mOptimized(false), mInstances(list_type(populationSize)), mMutations(list_type(populationSize)),
+    : mIterations(iterations), mOptimized(false), mInstances(thrust::host_vector<instance_type>(populationSize)), mMutations(thrust::host_vector<instance_type>(populationSize)),
       mBestIndex(0), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
 
     void optimize(Rastrigin function);
@@ -120,7 +138,20 @@ void display(const params_type& params) {
   std::cout << std::endl;
 }
 
+bool isGpuAvailable() {
+  int nDevices;
+
+  cudaGetDeviceCount(&nDevices);
+
+  return nDevices > 0;
+}
+
 int main() {
+  if (!isGpuAvailable()) {
+    std::cerr << "No GPU found, please try running in Google Colab" << std::endl;
+    return EXIT_FAILURE;
+  }
+
   Rastrigin func(3, -5.12, 5.12, 10);
   DifferentialEvolution optimizer(100, 2000, 0.25, 0.75);
 
@@ -197,17 +228,17 @@ double Rastrigin::evaluate(const params_type& params) const {
   return res;
 }
 
-list_type Rastrigin::generateParamSet(size_t n) const {
+thrust::host_vector<instance_type> Rastrigin::generateParamSet(size_t n) const {
   // Generate numbers in flat format
   RandomNumberGenerator generator;
   params_type paramsFlat = generator.generate(n * mDimensions, mLowerLimit, mUpperLimit);
 
   // Distribute the numbers in 2D vectors
-  list_type result(n);
+  thrust::host_vector<instance_type> result(n);
 
-  params_type params;
+  params_type *params;
   for(unsigned long i = 0; i < n; i++) {
-    params = params_type(paramsFlat.cbegin() + i * mDimensions, paramsFlat.cbegin() + (i + 1) * mDimensions);
+    params = new params_type(paramsFlat.cbegin() + i * mDimensions, paramsFlat.cbegin() + (i + 1) * mDimensions);
     result[i] = instance_type(params, *this);
   }
 
@@ -236,13 +267,15 @@ instance_type DifferentialEvolution::getMutation(const Rastrigin& function) cons
   } while(i1 == i3 || i2 == i3);
 
   // Copy the vector in i1
-  params_type params = params_type(*mInstances[i1].getParams());
+  auto* params = new params_type(*mInstances[i1].getParams());
 
   auto it1 = mInstances[i2].getParams()->cbegin(),
     it2 = mInstances[i3].getParams()->cbegin();
   // Perform v1 + F * (v2 - v3)
-  for(int i = 0; i < params.size(); i++) {
-    params[i] += mMutationParam * (*(it1 + i) - *(it2 + i));
+  int i = 0;
+  for(auto it = params->begin(); it != params->end(); it++) {
+    (*it) += mMutationParam * (*(it1 + i) - *(it2 + i));
+    i++;
   }
 
   instance_type result(params, function);
