@@ -7,6 +7,7 @@
 #include <curand.h>
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
+#include <thrust/transform.h>
 
 #define BLOCK_SIZE 128
 #define BLOCKS_COUNT(n) ((size_t)ceil(((float)n)/(float)BLOCK_SIZE))
@@ -130,6 +131,16 @@ public:
 
     void optimize(Rastrigin function);
     instance_type getBest() const;
+};
+
+/**
+ * Structure that will compare mutated and existing variants and then replace the latter if the former is more optimized
+ * */
+struct compare_values {
+    __host__ __device__
+    DEInstance operator()(const DEInstance& first, const DEInstance& second) {
+      return first.getValue() < second.getValue() ? first : second;
+    }
 };
 
 void display(const params_type& params) {
@@ -298,16 +309,14 @@ void DifferentialEvolution::performIteration(const Rastrigin& function) {
   // Generate the index of random mutation
   size_t certainMutationIndex = getRandomIndex();
 
+  thrust::device_vector<instance_type> mutationsTemp(mMutations), instancesTemp(mInstances);
+
+
   // For each element: if index equals to the one above or random number is below crossoverParam
   // Try replacing it by new entry
-  for (int i = 0; i < mPopulationSize; i++) {
-    if (i == certainMutationIndex || shouldMutate()) {
-      // If the mutated one shows better results, then replace
-      if (mMutations[i] < mInstances[i]) {
-        mInstances[i] = mMutations[i];
-      }
-    }
-  }
+  thrust::transform(mutationsTemp.begin(), mutationsTemp.end(), instancesTemp.begin(), instancesTemp.begin(), compare_values());
+
+  mInstances = thrust::host_vector<instance_type>(instancesTemp);
 }
 
 void DifferentialEvolution::determineBest(const Rastrigin& function) {
