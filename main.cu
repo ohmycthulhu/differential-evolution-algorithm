@@ -8,6 +8,8 @@
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
 #include <thrust/transform.h>
+#include <thrust/transform_reduce.h>
+#include <thrust/functional.h>
 #include <thrust/random/linear_congruential_engine.h>
 #include <thrust/random/uniform_real_distribution.h>
 
@@ -61,6 +63,17 @@ protected:
     double mA;
 
 public:
+    struct evaluate_function {
+      double mA;
+
+      explicit evaluate_function(double A) : mA(A) {}
+
+      __host__ __device__
+      double operator()(double x) const {
+        return x * x - mA * cos(2 * M_PI * x);
+      }
+    };
+
     Rastrigin(size_t dimensions, double lowerLimit, double upperLimit, double A)
         : mDimensions(dimensions), mLowerLimit(lowerLimit), mUpperLimit(upperLimit), mA(A) {}
 
@@ -177,8 +190,8 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  Rastrigin func(3, -5.12, 5.12, 10);
-  DifferentialEvolution optimizer(100, 2000, 0.25, 0.75);
+  Rastrigin func(30, -5.12, 5.12, 10);
+  DifferentialEvolution optimizer(100, 20000, 0.25, 0.75);
 
   optimizer.optimize(func);
 
@@ -245,12 +258,14 @@ double Rastrigin::evaluate(const params_type& params) const {
     return std::numeric_limits<double>::max();
 
   double res = mA * ((double)mDimensions);
-
-  for (int i = 0; i < mDimensions; i++) {
-    res += pow(params[i], 2) - mA * cos(2 * M_PI * params[i]);
-  }
-
-  return res;
+  thrust::device_vector<double> devParams(params.begin(), params.end());
+  return thrust::transform_reduce(
+      devParams.begin(),
+      devParams.end(),
+      evaluate_function(mA),
+      res,
+      thrust::plus<double>()
+  );
 }
 
 thrust::host_vector<instance_type> Rastrigin::generateParamSet(size_t n) const {
