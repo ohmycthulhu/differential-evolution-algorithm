@@ -8,6 +8,8 @@
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
 #include <thrust/transform.h>
+#include <thrust/random/linear_congruential_engine.h>
+#include <thrust/random/uniform_real_distribution.h>
 
 #define BLOCK_SIZE 128
 #define BLOCKS_COUNT(n) ((size_t)ceil(((float)n)/(float)BLOCK_SIZE))
@@ -124,7 +126,26 @@ protected:
     void determineBest(const Rastrigin& function);
     size_t getRandomIndex() const;
     bool shouldMutate() const;
+
 public:
+    struct randomized_comparison {
+    protected:
+        double mThreshold;
+        thrust::minstd_rand rng;
+        thrust::uniform_real_distribution<double> dist;
+
+    public:
+        explicit randomized_comparison(double threshold) : mThreshold(threshold), rng(), dist(thrust::uniform_real_distribution<double>(0, 1)) {}
+
+        __host__ __device__
+        DEInstance operator()(const DEInstance& mutated, const DEInstance& original) {
+          if (dist(rng) >= mThreshold)
+            return original;
+
+          return mutated.getValue() < original.getValue() ? mutated : original;
+        }
+    };
+
     DifferentialEvolution(size_t iterations, size_t populationSize, double mutationParam, double crossoverParam)
     : mIterations(iterations), mOptimized(false), mInstances(thrust::host_vector<instance_type>(populationSize)), mMutations(thrust::host_vector<instance_type>(populationSize)),
       mBestIndex(0), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
@@ -136,13 +157,6 @@ public:
 /**
  * Structure that will compare mutated and existing variants and then replace the latter if the former is more optimized
  * */
-struct compare_values {
-    __host__ __device__
-    DEInstance operator()(const DEInstance& first, const DEInstance& second) {
-      return first.getValue() < second.getValue() ? first : second;
-    }
-};
-
 void display(const params_type& params) {
   for (auto it = params.cbegin(); it != params.cend(); it++)
     std::cout << *it << " ";
@@ -309,12 +323,21 @@ void DifferentialEvolution::performIteration(const Rastrigin& function) {
   // Generate the index of random mutation
   size_t certainMutationIndex = getRandomIndex();
 
+  if (mMutations[certainMutationIndex].getValue() < mInstances[certainMutationIndex].getValue())
+    mInstances[certainMutationIndex] = mMutations[certainMutationIndex];
+
   thrust::device_vector<instance_type> mutationsTemp(mMutations), instancesTemp(mInstances);
 
-
-  // For each element: if index equals to the one above or random number is below crossoverParam
-  // Try replacing it by new entry
-  thrust::transform(mutationsTemp.begin(), mutationsTemp.end(), instancesTemp.begin(), instancesTemp.begin(), compare_values());
+  // Transform part of the mutations to the instances if:
+  // 1) random value is less than threshold
+  // 2) mutated value is bigger than initial one
+  thrust::transform(
+    mutationsTemp.begin(),
+    mutationsTemp.end(),
+    instancesTemp.begin(),
+    instancesTemp.begin(),
+    randomized_comparison(mCrossoverParam)
+  );
 
   mInstances = thrust::host_vector<instance_type>(instancesTemp);
 }
