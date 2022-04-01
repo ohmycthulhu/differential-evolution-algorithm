@@ -8,6 +8,7 @@
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
 #include <thrust/transform.h>
+#include <thrust/reduce.h>
 #include <thrust/transform_reduce.h>
 #include <thrust/functional.h>
 #include <thrust/random/linear_congruential_engine.h>
@@ -99,7 +100,7 @@ public:
     DEInstance(const DEInstance& other) : mParams(other.mParams), mValue(other.mValue) {}
 
     __host__ __device__
-    bool isEmpty() {
+    bool isEmpty() const{
       return mParams == nullptr;
     }
 
@@ -130,13 +131,13 @@ protected:
     size_t mIterations, mPopulationSize;
     bool mOptimized;
     thrust::host_vector<instance_type> mInstances, mMutations;
-    size_t mBestIndex;
+    instance_type mBestValue;
     double mMutationParam, mCrossoverParam;
 
     void initialize(const Rastrigin& function);
     instance_type getMutation(const Rastrigin& function) const;
     void performIteration(const Rastrigin& function);
-    void determineBest(const Rastrigin& function);
+    void determineBest();
     size_t getRandomIndex() const;
     bool shouldMutate() const;
 
@@ -159,9 +160,19 @@ public:
         }
     };
 
+    struct determine_best {
+        __host__ __device__
+        instance_type operator()(const instance_type& current, const DEInstance& best) {
+          if (best.isEmpty())
+            return current;
+
+          return current.getValue() < best.getValue() ? current : best;
+        }
+    };
+
     DifferentialEvolution(size_t iterations, size_t populationSize, double mutationParam, double crossoverParam)
     : mIterations(iterations), mOptimized(false), mInstances(thrust::host_vector<instance_type>(populationSize)), mMutations(thrust::host_vector<instance_type>(populationSize)),
-      mBestIndex(0), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
+      mBestValue(), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
 
     void optimize(Rastrigin function);
     instance_type getBest() const;
@@ -357,16 +368,15 @@ void DifferentialEvolution::performIteration(const Rastrigin& function) {
   mInstances = thrust::host_vector<instance_type>(instancesTemp);
 }
 
-void DifferentialEvolution::determineBest(const Rastrigin& function) {
-  size_t bestIndex = 0;
+void DifferentialEvolution::determineBest() {
+  thrust::device_vector<instance_type> devInstances(mInstances.begin(), mInstances.end());
 
-  for(int i = 1; i < mInstances.size(); i++) {
-    if (mInstances[i] < mInstances[bestIndex]) {
-      bestIndex = i;
-    }
-  }
-
-  mBestIndex = bestIndex;
+  mBestValue = thrust::reduce(
+      devInstances.begin(),
+      devInstances.end(),
+      instance_type(),
+      determine_best()
+  );
 }
 
 void DifferentialEvolution::optimize(Rastrigin function) {
@@ -380,13 +390,14 @@ void DifferentialEvolution::optimize(Rastrigin function) {
   }
 
   mOptimized = true;
+
   // Get the best param in the set
-  determineBest(function);
+  determineBest();
 }
 
 instance_type DifferentialEvolution::getBest() const {
   if (!mOptimized)
     throw std::runtime_error("Can't get the best value before optimization");
 
-  return mInstances[mBestIndex];
+  return mBestValue;
 }
