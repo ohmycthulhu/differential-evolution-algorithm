@@ -18,15 +18,27 @@
 #define BLOCKS_COUNT(n) ((size_t)ceil(((float)n)/(float)BLOCK_SIZE))
 
 /**
+ * Main parameters
+ * */
+const size_t FUNC_DIMENSIONS = 30;
+const double LOWER_BOUND = -5.12, UPPER_BOUND = 5.12;
+const double FUNC_COEF_A = 10;
+const size_t ITERATIONS_COUNT = 100, POPULATION_SIZE = 20000;
+const double ALGORITHM_MUTATION_PARAM = 0.25, ALGORITHM_CROSSOVER_PARAM = 0.75;
+
+/**
  * Class declarations
  * */
 class Rastrigin;
+
 class DEInstance;
+
 class DifferentialEvolution;
 
 /**
  * Type declarations
  * */
+// We use aliases for names to easily manage and give them more descriptive names
 typedef std::vector<double> params_type;
 typedef DEInstance instance_type;
 
@@ -34,28 +46,44 @@ typedef DEInstance instance_type;
  * Kernels
  * */
 
-__global__ void transformNumber(double* src, int size, double lower, double upper) {
+/**
+ * Kernel for transforming numbers from uniform ([0;1]) format to range [lower;upper]
+ * */
+__global__ void transformNumber(double *src, int size, double lower, double upper) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+
   if (idx < size) {
     src[idx] = src[idx] * (upper - lower) + lower;
   }
 }
 
+/**
+ * Wrapper class for CuRAND library. It's used only for generating a vector of double numbers in [lowerBound;upperBound] range
+ * */
 class RandomNumberGenerator {
 protected:
     curandGenerator_t generator;
 
-    double* _generateNumbers(size_t n);
+    double *_generateNumbers(size_t n);
+
 public:
     RandomNumberGenerator() {
       curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_MT19937);
       curandSetPseudoRandomGeneratorSeed(generator, time(nullptr));
     }
 
+    ~RandomNumberGenerator() {
+      curandDestroyGenerator(generator);
+    }
+
     params_type generate(size_t n, double lowerBound, double upperBound);
 };
 
-
+/**
+ * Class that implements Rastrigin function
+ * It includes: calculating value by vector of parameters, checking whether the value is inside the boundaries,
+ * and generating a vector of algorithm instances with randomized parameters
+ * */
 class Rastrigin {
 protected:
     size_t mDimensions;
@@ -65,46 +93,55 @@ protected:
 
 public:
     struct evaluate_function {
-      double mA;
+        double mA;
 
-      explicit evaluate_function(double A) : mA(A) {}
+        explicit evaluate_function(double A) : mA(A) {}
 
-      __host__ __device__
-      double operator()(double x) const {
-        return x * x - mA * cos(2 * M_PI * x);
-      }
+        __host__ __device__
+        double operator()(double x) const {
+          return x * x - mA * cos(2 * M_PI * x);
+        }
     };
 
     Rastrigin(size_t dimensions, double lowerLimit, double upperLimit, double A)
         : mDimensions(dimensions), mLowerLimit(lowerLimit), mUpperLimit(upperLimit), mA(A) {}
 
-    bool isWithinConstraint(const params_type& params) const;
-    double evaluate(const params_type& params) const;
+    bool isWithinConstraint(const params_type &params) const;
+
+    double evaluate(const params_type &params) const;
+
     thrust::host_vector<instance_type> generateParamSet(size_t n) const;
 };
 
-
+/**
+ * Class that represents one set of parameters for Differential Evolution algorithm
+ * It contains pointer to the parameters (needed to avoid copying vector when we pass it to device) and the evaluated value
+ * */
 class DEInstance {
 protected:
-    params_type* mParams;
+    params_type *mParams;
     double mValue;
 
 public:
+    // Constructor for creating empty object
     __host__ __device__
     DEInstance() : mParams(nullptr), mValue(-1) {}
 
+    // Constructor for initializing the class with parameters and function value
     __host__ __device__
-    DEInstance(params_type* params, const Rastrigin& func) : mParams(params), mValue(func.evaluate(*params)) {}
+    DEInstance(params_type *params, const Rastrigin &func) : mParams(params), mValue(func.evaluate(*params)) {}
+
+    // Constructor for shallow copying from another object. It's used mostly when objects are passed frequently
+    __host__ __device__
+    DEInstance(const DEInstance &other) : mParams(other.mParams), mValue(other.mValue) {}
 
     __host__ __device__
-    DEInstance(const DEInstance& other) : mParams(other.mParams), mValue(other.mValue) {}
-
-    __host__ __device__
-    bool isEmpty() const{
+    bool isEmpty() const {
       return mParams == nullptr;
     }
 
-    const params_type* getParams() const{
+    // Device shouldn't have the access to parameters that are located in host's memory
+    const params_type *getParams() const {
       return mParams;
     }
 
@@ -114,34 +151,60 @@ public:
     }
 
     __host__ __device__
-    bool operator>(const DEInstance& other) const { return mValue > other.mValue; }
+    bool operator>(const DEInstance &other) const { return mValue > other.mValue; }
 
     __host__ __device__
-    bool operator>=(const DEInstance& other) const { return mValue >= other.mValue; }
+    bool operator>=(const DEInstance &other) const { return mValue >= other.mValue; }
 
     __host__ __device__
-    bool operator<(const DEInstance& other) const { return mValue < other.mValue; }
+    bool operator<(const DEInstance &other) const { return mValue < other.mValue; }
 
     __host__ __device__
-    bool operator<=(const DEInstance& other) const { return mValue <= other.mValue; }
+    bool operator<=(const DEInstance &other) const { return mValue <= other.mValue; }
 };
 
+/**
+ * Class that implements Differential Evolution algorithm
+ * */
 class DifferentialEvolution {
 protected:
+    // Number of required iterations and population size
     size_t mIterations, mPopulationSize;
+
+    // Flag for determining whether the function is already optimized
     bool mOptimized;
+
+    // Vectors for storing current population and potential population (mutated instances)
     thrust::host_vector<instance_type> mInstances, mMutations;
+
+    // The best found instance, it's empty by default
     instance_type mBestValue;
+
+    // The real value that determine: mMutationParam - mutation coefficient, mCrossoverParam - chances of replacing in crossover
     double mMutationParam, mCrossoverParam;
 
-    void initialize(const Rastrigin& function);
-    instance_type getMutation(const Rastrigin& function) const;
-    void performIteration(const Rastrigin& function);
+    // Method for initializing the population
+    void initialize(const Rastrigin &function);
+
+    // Returns the single mutation instance
+    instance_type getMutation(const Rastrigin &function) const;
+
+    // Performs everything that needs to be done in single iteration
+    void performIteration(const Rastrigin &function);
+
+    // Find and saves the best found value
     void determineBest();
+
+    // Generates the random index within the current iteration
     size_t getRandomIndex() const;
-    bool shouldMutate() const;
 
 public:
+    /**
+     * Functor for replacing mutations with better evaluated values with the randomization factor
+     * Basically, combines two operations:
+     * 1) Chooses the current value over mutated if random value is greater than threshold
+     * 2) Replaces the current value with mutated if the latter's performance is better
+     * */
     struct randomized_comparison {
     protected:
         double mThreshold;
@@ -149,10 +212,11 @@ public:
         thrust::uniform_real_distribution<double> dist;
 
     public:
-        explicit randomized_comparison(double threshold) : mThreshold(threshold), rng(), dist(thrust::uniform_real_distribution<double>(0, 1)) {}
+        explicit randomized_comparison(double threshold) : mThreshold(threshold), rng(),
+                                                           dist(thrust::uniform_real_distribution<double>(0, 1)) {}
 
         __host__ __device__
-        DEInstance operator()(const DEInstance& mutated, const DEInstance& original) {
+        DEInstance operator()(const DEInstance &mutated, const DEInstance &original) {
           if (dist(rng) >= mThreshold)
             return original;
 
@@ -160,9 +224,12 @@ public:
         }
     };
 
+    /**
+     * Functor for determining the best value. It should be used with reduce operation
+     * */
     struct determine_best {
         __host__ __device__
-        instance_type operator()(const instance_type& current, const DEInstance& best) {
+        instance_type operator()(const instance_type &current, const DEInstance &best) {
           if (best.isEmpty())
             return current;
 
@@ -170,20 +237,26 @@ public:
         }
     };
 
+    /**
+     * I know it's a lot of parameters, but all of them should be initialized
+     * */
     DifferentialEvolution(size_t iterations, size_t populationSize, double mutationParam, double crossoverParam)
-    : mIterations(iterations), mOptimized(false), mInstances(thrust::host_vector<instance_type>(populationSize)), mMutations(thrust::host_vector<instance_type>(populationSize)),
-      mBestValue(), mPopulationSize(populationSize), mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
+        : mIterations(iterations), mOptimized(false), mInstances(thrust::host_vector<instance_type>(populationSize)),
+          mMutations(thrust::host_vector<instance_type>(populationSize)), mBestValue(), mPopulationSize(populationSize),
+          mMutationParam(mutationParam), mCrossoverParam(crossoverParam) {}
 
-    void optimize(Rastrigin function);
+    /**
+     * The main public method - performs optimization and returns the best found value
+     * */
+    instance_type optimize(Rastrigin function);
+
+    // Returns the best found value if object is optimized, otherwise throws an error
     instance_type getBest() const;
 };
 
-/**
- * Structure that will compare mutated and existing variants and then replace the latter if the former is more optimized
- * */
-void display(const params_type& params) {
-  for (auto it = params.cbegin(); it != params.cend(); it++)
-    std::cout << *it << " ";
+void printParams(const params_type &params) {
+  for (double param: params)
+    std::cout << param << " ";
   std::cout << std::endl;
 }
 
@@ -201,34 +274,39 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  Rastrigin func(30, -5.12, 5.12, 10);
-  DifferentialEvolution optimizer(100, 20000, 0.25, 0.75);
+  Rastrigin func(FUNC_DIMENSIONS, LOWER_BOUND, UPPER_BOUND, FUNC_COEF_A);
 
-  optimizer.optimize(func);
+  DifferentialEvolution optimizer(
+      ITERATIONS_COUNT,
+      POPULATION_SIZE,
+      ALGORITHM_MUTATION_PARAM,
+      ALGORITHM_CROSSOVER_PARAM
+  );
 
-  instance_type bestSolution = optimizer.getBest();
+  instance_type bestSolution = optimizer.optimize(func);
 
   std::cout << "The best solution: " << bestSolution.getValue() << std::endl;
-  display(*bestSolution.getParams());
+  printParams(*bestSolution.getParams());
 
   return 0;
 }
 
 /**
- * Implementation of random generator
+ * Implementation of RandomNumberGenerator
  * */
 params_type RandomNumberGenerator::generate(size_t n, double lowerBound, double upperBound) {
   // Generate the numbers in uniform format
   // Numbers will be on the device
-  double* numbersDev = _generateNumbers(n);
+  double *numbersDev = _generateNumbers(n);
 
   // Transform numbers from [0:1] to [lowerBound:upperBound]
   transformNumber<<<BLOCKS_COUNT(n), BLOCK_SIZE>>>(numbersDev, n, lowerBound, upperBound);
 
   // Copy from device to host and turn into more comfortable format
-  auto* numbersHost = new double[n];
+  auto *numbersHost = new double[n];
   cudaMemcpy(numbersHost, numbersDev, sizeof(double) * n, cudaMemcpyDeviceToHost);
 
+  // Initialize the result variable in vector format
   params_type result(numbersHost, numbersHost + n);
 
   // Free data and return vector
@@ -238,12 +316,15 @@ params_type RandomNumberGenerator::generate(size_t n, double lowerBound, double 
 }
 
 double *RandomNumberGenerator::_generateNumbers(size_t n) {
+  // Allocate host memory
   size_t bytesCount = n * sizeof(double);
   double *hostData, *devData;
   hostData = new double[n];
 
-  cudaMalloc((void**)&devData, bytesCount);
+  // Allocate device memory
+  cudaMalloc((void **) &devData, bytesCount);
 
+  // Generate numbers in [0;1] range and copy to the host
   curandGenerateUniformDouble(generator, devData, n);
 
   cudaMemcpy(hostData, devData, bytesCount, cudaMemcpyDeviceToHost);
@@ -254,22 +335,26 @@ double *RandomNumberGenerator::_generateNumbers(size_t n) {
 /**
  * Implementation of Rastrigin function
  * */
-bool Rastrigin::isWithinConstraint(const params_type& params) const {
+bool Rastrigin::isWithinConstraint(const params_type &params) const {
   // Check whether every parameter is within the bounds
-  for(double param : params)
+  for (double param: params)
     if (param < mLowerLimit || mUpperLimit < param)
       return false;
 
   return true;
 }
 
-double Rastrigin::evaluate(const params_type& params) const {
-  // If the number is out of bounds, return max number (because it's minimization function
+double Rastrigin::evaluate(const params_type &params) const {
+  // If the number is out of bounds, return max number (because it's minimization function)
   if (!isWithinConstraint(params))
     return std::numeric_limits<double>::max();
 
-  double res = mA * ((double)mDimensions);
+  // Use thrust::transform_reduce to map x => x^2 - A * cos(2 * pi * x), then find the sum
+  // The initial value is A * n, so the result is
+  // A * n + (params | map((x) => x^2 - A * cos(2 * pi *x)) | reduce(+))
+  double res = mA * ((double) mDimensions);
   thrust::device_vector<double> devParams(params.begin(), params.end());
+
   return thrust::transform_reduce(
       devParams.begin(),
       devParams.end(),
@@ -288,7 +373,10 @@ thrust::host_vector<instance_type> Rastrigin::generateParamSet(size_t n) const {
   thrust::host_vector<instance_type> result(n);
 
   params_type *params;
-  for(unsigned long i = 0; i < n; i++) {
+  // This part can't be parallelized, because it requires allocating host memory. The calculating of function is based
+  // on the value of parameters that will be inaccessible from device or too expensive to copy every set of parameters
+  // For each instance, extract generated parameters and create new instance of DEInstance
+  for (unsigned long i = 0; i < n; i++) {
     params = new params_type(paramsFlat.cbegin() + i * mDimensions, paramsFlat.cbegin() + (i + 1) * mDimensions);
     result[i] = instance_type(params, *this);
   }
@@ -299,32 +387,37 @@ thrust::host_vector<instance_type> Rastrigin::generateParamSet(size_t n) const {
 /**
  * Implementation of Differential Evolution
  * */
-void DifferentialEvolution::initialize(const Rastrigin& function) {
+void DifferentialEvolution::initialize(const Rastrigin &function) {
+  // Delegate the generation of set of params to the Rastrigin function
   mInstances = function.generateParamSet(mInstances.size());
 }
 
-instance_type DifferentialEvolution::getMutation(const Rastrigin& function) const {
+instance_type DifferentialEvolution::getMutation(const Rastrigin &function) const {
   /* Generate three distinct indices */
+  // This method will cause infinite if population size less than 3
   size_t i1, i2, i3;
 
   i1 = getRandomIndex();
 
+  // Generate the index until i1 and i2 are distinct
   do {
     i2 = getRandomIndex();
-  } while(i1 == i2);
+  } while (i1 == i2);
 
+  // Generate the index until i1, i2, and i3 are distinct
   do {
     i3 = getRandomIndex();
-  } while(i1 == i3 || i2 == i3);
+  } while (i1 == i3 || i2 == i3);
 
   // Copy the vector in i1
-  auto* params = new params_type(*mInstances[i1].getParams());
+  auto *params = new params_type(*mInstances[i1].getParams());
 
   auto it1 = mInstances[i2].getParams()->cbegin(),
-    it2 = mInstances[i3].getParams()->cbegin();
+      it2 = mInstances[i3].getParams()->cbegin();
+
   // Perform v1 + F * (v2 - v3)
   int i = 0;
-  for(auto it = params->begin(); it != params->end(); it++) {
+  for (auto it = params->begin(); it != params->end(); it++) {
     (*it) += mMutationParam * (*(it1 + i) - *(it2 + i));
     i++;
   }
@@ -337,38 +430,36 @@ size_t DifferentialEvolution::getRandomIndex() const {
   return rand() % mPopulationSize;
 }
 
-bool DifferentialEvolution::shouldMutate() const {
-  return (rand() / (double)RAND_MAX) < mCrossoverParam;
-}
-
-void DifferentialEvolution::performIteration(const Rastrigin& function) {
+void DifferentialEvolution::performIteration(const Rastrigin &function) {
   // Prepare the set of mutated instances
   for (int i = 0; i < mPopulationSize; i++)
     mMutations[i] = getMutation(function);
 
-  // Generate the index of random mutation
+  // Generate the index for certain mutation. For this index, check the condition for replacing
   size_t certainMutationIndex = getRandomIndex();
 
   if (mMutations[certainMutationIndex].getValue() < mInstances[certainMutationIndex].getValue())
     mInstances[certainMutationIndex] = mMutations[certainMutationIndex];
 
+  // Copy instances to the device memory
   thrust::device_vector<instance_type> mutationsTemp(mMutations), instancesTemp(mInstances);
 
   // Transform part of the mutations to the instances if:
   // 1) random value is less than threshold
   // 2) mutated value is bigger than initial one
   thrust::transform(
-    mutationsTemp.begin(),
-    mutationsTemp.end(),
-    instancesTemp.begin(),
-    instancesTemp.begin(),
-    randomized_comparison(mCrossoverParam)
+      mutationsTemp.begin(),
+      mutationsTemp.end(),
+      instancesTemp.begin(),
+      instancesTemp.begin(),
+      randomized_comparison(mCrossoverParam)
   );
 
   mInstances = thrust::host_vector<instance_type>(instancesTemp);
 }
 
 void DifferentialEvolution::determineBest() {
+  // Delegate finding the best values to the specific functor
   thrust::device_vector<instance_type> devInstances(mInstances.begin(), mInstances.end());
 
   mBestValue = thrust::reduce(
@@ -379,13 +470,13 @@ void DifferentialEvolution::determineBest() {
   );
 }
 
-void DifferentialEvolution::optimize(Rastrigin function) {
+instance_type DifferentialEvolution::optimize(Rastrigin function) {
   // Initialize the instances
   initialize(function);
 
   // Before hit the maximum iterations count
   // Optimize the function evaluation
-  for(int i = 0; i < mIterations; i++) {
+  for (int i = 0; i < mIterations; i++) {
     performIteration(function);
   }
 
@@ -393,6 +484,8 @@ void DifferentialEvolution::optimize(Rastrigin function) {
 
   // Get the best param in the set
   determineBest();
+
+  return getBest();
 }
 
 instance_type DifferentialEvolution::getBest() const {
