@@ -229,7 +229,7 @@ public:
      * */
     struct determine_best {
         __host__ __device__
-        instance_type operator()(const instance_type &current, const DEInstance &best) {
+        instance_type operator()(const DEInstance &best, const instance_type &current) {
           if (best.isEmpty())
             return current;
 
