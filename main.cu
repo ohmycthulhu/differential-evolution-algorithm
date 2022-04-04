@@ -20,10 +20,10 @@
 /**
  * Main parameters
  * */
-const size_t FUNC_DIMENSIONS = 30;
+const size_t FUNC_DIMENSIONS = 10;
 const double LOWER_BOUND = -5.12, UPPER_BOUND = 5.12;
 const double FUNC_COEF_A = 10;
-const size_t ITERATIONS_COUNT = 100, POPULATION_SIZE = 20000;
+const size_t ITERATIONS_COUNT = 100, POPULATION_SIZE = 2000;
 const double ALGORITHM_MUTATION_PARAM = 0.25, ALGORITHM_CROSSOVER_PARAM = 0.75;
 
 /**
